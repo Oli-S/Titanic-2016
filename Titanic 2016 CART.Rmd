@@ -1,0 +1,286 @@
+---
+title: "Titanic Project"
+author: "Not Olivia"
+date: "April 30, 2016"
+output: html_document
+---
+```{r, message=FALSE}
+library(car)
+library(stringr)
+library(tree)
+library(randomForest)
+library(rpart)
+library(caret)
+library(rattle)
+library(rpart.plot)
+```
+
+The following details the creation of a logistic regression model to predict passenger survival after the devastating shipwreck of the RMS Titanic on April 15, 1912.
+
+```{r}
+setwd("/Users/Steph/Documents/STAT_488/Titanic")
+train <- read.csv("train.csv")
+test <- read.csv("test.csv")
+```
+
+**Data Summary**
+
+```{r}
+str(train)
+train$Pclass <- as.factor(train$Pclass)
+```
+
+The Titanic train dataset has 891 observations and 12 variables: PassengerId, Survived, Pclass (Passenger Class), Name, Sex, Age, SibSp (Sibling and Spousal relationships), Parch (Parent and Child relationships), Ticket number, Fare, Cabin, and Embarked. Note that Pclass is entered as an integer; it should be converted to a factor.
+
+```{r}
+summary(train)
+```
+
+Observations from the summary output:
+
+* Survived: skewed, clearly showing that the majority of passengers did not survive (0).
+* Pclass: 3 levels (1, 2, 3), the majority being in 3rd class.
+* Name: includes title in addition to first and last names.
+* Age: average age is late 20s, however there are 177 missing values.
+* Parch: not very many Parent/Child relationships were documented.
+* Fare: large range 0 to 512.33, right-skewed with a mean of 32.2. It is unclear why Fare would have a value of 0, this should be reviewed. 
+* Cabin: a large number of missing values.
+* Embarked: uneven distribution of passengers embarking across the 3 ports.
+
+```{r}
+mosaicplot(train$Pclass~ train$Survived, main = "Survival by Passenger Class", xlab = "Passenger Class", ylab="Survival", color=T)
+```
+
+From the mosaic plot it can be determined, unsurprisingly, that third class passengers largely did not survive the shipwreck, while a greater portion of first class passengers did survive. 
+
+```{r}
+boxplot(Age~Survived, data=train, main="Age")
+```
+
+There is quite a lot of overlap between survival rates for passengers by age. Intrinsically, given the "women and children first" policy, it would seem that age, specifically a lower age would be seen in the survival plot, though that does not seem to be the case. This might be due to the large amount of missing age values present in the dataset.
+
+```{r}
+boxplot(SibSp~Survived, data=train, main="Sibling/Spouse")
+```
+
+The SibSp boxplot shows almost identical overlap.
+
+```{r}
+boxplot(Parch~Survived, data=train, main="Parent/Child")
+```
+
+From the outliers, it seems passengers with Parent/Child relationships greater than 1 were not as likely to survive. 
+
+```{r}
+boxplot(Fare~Survived, data=train, main="Fare")
+summary(train$Fare)
+subset(train, Fare == 0)
+```
+
+The outlier that paid over $500 in fare survived. There is overlap by fare type in the number of passengers that survived with those that did not. There are 15 such instances, from a variety of classes and ages, including a Jonkheer, which is a Dutch nobility. It is unlikely that these fares were not paid. Assuming they were not paid by other passengers, the fare could be populated using the average fare paid by class. 
+
+Proportion tables can be created to understand survival based on sex and embarkation.
+
+```{r}
+prop.table(table(train$Sex, train$Survived),1)
+```
+
+A greater proportion of women survived compared to men, as expected. 
+
+```{r}
+prop.table(table(train$Embarked, train$Survived),1)
+```
+
+An almost even number of passengers that embarked at Cherbourg survived, whereas the majority of passengers that embarked at Queenstown and Southampton did not survive. This could be related to passenger class.
+
+Given the overview above, a possible model could be created with Age, Pclass, Parch, Sex, Fare, and Embarked. While Name may not be helpful in its current state, the title could be extracted to determine if that would assist in identifying survivors, since first class passengers would have titles fitting their social status. In terms of Fare, mean values could be calculated to replace 0. To include Age in the model, the missing values would have to be identified, possibly using a decision tree. Lastly, it could be beneficial to create a family size variable that accounts for both sibling and parent relationships, and perhaps engineer a variable to determine which women were likely to be mothers, and thus have a higher probability of surviving. 
+
+**Manipulating Name**
+
+Before manipulating the data, it would be easier to apply the changes to a combined train/test data set. 
+
+```{r}
+test$Survived <- rep(NA, length(test$Name))
+test_train <- rbind(train,test)
+```
+
+```{r}
+test_train$title <- str_sub(test_train$Name, str_locate(test_train$Name, ",")[ , 1] + 2, str_locate(test_train$Name, "\\.")[ , 1] - 1)
+table(test_train$title)
+prop.table(table(test_train$title, test_train$Survived),1)
+```
+
+From the table above, there are 18 different titles. It appears a greater number of passengers with the title: Mrs, Ms, Miss, Master, Lady, Countess, Mme, and Mlle survived. Given the many levels, it would be beneficial to reclassify the variables, keeping nobility (i.e. titles indicating higher social status) together, and combining Miss and Ms.
+
+```{r}
+noble <- c("Capt", "Col", "Don", "Dr", "Jonkheer", "Major", "Rev", "Sir", "Lady", "Mlle", "Mme", "the Countess", "Dona")
+test_train$title[test_train$title %in% noble] <- "noble"
+Ms<- c("Ms", "Miss")
+test_train$title[test_train$title %in% Ms] <- "Miss"
+test_train$title <- as.factor(test_train$title)
+```
+
+**Manipulating Fare**
+
+In addition to reclassifying and creating the Title variable, zero fares could be replaced with the median values of fares by passenger class. The median would be used over the mean because it is a more robust measure, particularly considering this skewed dataset. 
+
+```{r}
+summary(test_train$Fare)
+test_train$Pclass <- as.factor(test_train$Pclass)
+aggregate(Fare~Pclass, test_train, FUN=median)
+test_train$Fare <- ifelse( (round(test_train$Fare==0) & as.numeric(test_train$Pclass)==1),60,
+                    ifelse( (round(test_train$Fare==0) & as.numeric(test_train$Pclass)==2),15.0458,
+                            ifelse( (round(test_train$Fare==0) & as.numeric(test_train$Pclass)==3),8.05,test_train$Fare)))
+summary(test_train$Fare)
+
+which(is.na(test_train$Fare))
+test_train$Fare[which(is.na(test_train$Fare))] <- 8.05
+summary(test_train$Fare)  
+```
+
+There is one NA value for Fare. That value will be replaced with the median value for that passenger class, which happens to be 3rd class. 
+
+**Predicting Age**
+
+Removed Embarked, Cabin, Ticket, Name from the model as I believed they would not help in determining Age. In terms of cross validation, the complexity parameter (cp) assists with avoiding over-fitting of the data and provides a cross validation error "xerror". Three models are presented below with pruning based on cp.
+
+```{r}
+summary(test_train$Age)
+t1 <- rpart(Age~Pclass+Sex+SibSp+Parch+Fare, method = "anova", data=test_train[!is.na(test_train$Age),])
+t1
+plotcp(t1)
+prune(t1, cp=0.02)
+
+t2 <- rpart(Age~Pclass+Sex+SibSp+Parch+Fare+title, data=test_train[!is.na(test_train$Age),])
+t2
+plotcp(t2)
+
+t3<- rpart(Age~Pclass+Sex+SibSp+Parch+Fare, data=test_train[!is.na(test_train$Age),], control = rpart.control(xval=50, minisplit=50, minbucket = 10), model = T)
+t3
+printcp(t3)
+t3p<-prune(t3, cp=0.019)
+
+fancyRpartPlot(t3p, uniform =T, main = "Predicting Age")
+
+agePrediction <- predict(t3p, test_train[is.na(test_train$Age),])
+test_train$Age[which(is.na(test_train$Age))] <- agePrediction
+summary(test_train$Age)
+```
+
+The xerror of the t3 tree is lowest at a cp of 0.01. However, making cp=0.01 gives a tree with 6 splits. A cp cut off of 0.010117 or 0.019 (each within 1 standard deviation of xerror of the lowest cp), gives a 5-split tree with the same deviance reduction. 
+
+The tree with the lowest deviance has 9 nodes. The previous median was 28 and the mean was 29.88. The new median is 29.01 with a mean age of 29.85.
+
+**Embarked**
+
+A final look at the data reveals embarked is missing two observations. That can be easily fixed with setting them to S, since that is the majority. 
+
+```{r}
+summary(test_train)
+which(test_train$Embarked=='')
+test_train$Embarked[c(62,830)] <- "S"
+test_train$Embarked <- factor(test_train$Embarked)
+```
+
+**Family Size**
+
+It may also be beneficial to engineer a family size variable that combines SibSp and Parch to better determine survival. 
+
+```{r}
+
+test_train$Familysize <- test_train$SibSp + test_train$Parch
+```
+
+**Mothers**
+
+A final observation is that since women and children were allowed to board the life boats first, it may be advantageous to parse out the mothers, using sex, age, and sibsp. Age can be set to greater than or equal to 18. 
+
+```{r}
+test_train$Mothers <- ifelse(test_train$Sex=="female" & test_train$SibSp!=0 & test_train$Age >=18, 1, 0)
+test_train$Mothers <- as.factor(test_train$Mothers)
+```
+
+**Random Forest Predictions**
+
+Now the data can be "unsplit" and reduced to their respective train and test sizes to begin predicting survival rates. 
+
+```{r}
+newtrain <- test_train[1:891,]
+newtest <- test_train[892:1309,]
+```
+
+First random forest model, with default values, and all pertinent variables:
+
+```{r}
+set.seed(123)
+rf1 <- randomForest(as.factor(Survived)~Pclass + Sex + Age + SibSp + Parch+ Familysize + Mothers + Fare + Embarked + title, data= newtrain, ntree=1000, importance=T)
+rf1
+varImpPlot(rf1)
+```
+
+The variable importance plot selects title, passenger class, fare, and sex as the top variables in the model. Without any tree controls, the out of bag estimate of error rate is 16.16% and from the confusion matrix a majority of the observations are falling in the 0 category as expected. Next step will be to tune the parameters of the random forest to decrease the out of bag error rate. The parameters mtry and ntrees carry the greatest effect on the random forest model. The package caret will allow me to tune the parameters while also cross validating the model.
+
+Default caret parameters (crosss validation 10-fold, 3 repeats):
+
+```{r}
+tuneTrain <- newtrain[,c(3,5:8,10,12:15)]
+tc <- trainControl(method="repeatedcv", number=10, repeats=3)
+set.seed(123)
+mtry <- sqrt(ncol(tuneTrain))
+tunegrid <- expand.grid(.mtry=mtry)
+rf_def <- train(as.factor(Survived)~Pclass + Sex + Age + SibSp + Parch+ Familysize + Mothers + Fare + Embarked + title, data=newtrain, method="rf", metric="Accuracy", tuneGrid=tunegrid, trControl=tc)
+print(rf_def)
+rf_def$finalModel
+```
+
+The default model in caret has an accuracy of 83.2% out of bag estimate of 16.5%. A next approach could be to randomly search for appropriate tuning parameters with search="random" in the train control and try a tuning length of 15. In other words how does the accuracy change as mtry increases.  
+
+```{r}
+tc2 <- trainControl(method="repeatedcv", number=10, repeats=3, search="random")
+set.seed(123)
+mtry <- sqrt(ncol(tuneTrain))
+rf_rand <- train(as.factor(Survived)~Pclass + Sex + Age + SibSp + Parch+ Familysize + Mothers + Fare + Embarked + title, data=newtrain, method="rf", metric="Accuracy", tuneLength=15, trControl=tc2)
+print(rf_rand)
+rf_rand$finalModel
+```
+
+This model shows that an mtry of 5 has the highest accuracy, at 83.7% and an out of bag error of 15.6%. 
+
+Finally, another approach is to create a for loop that could better approximate the number of trees to use. In this example the mtry parameter will remain constant. 
+
+```{r}
+tc3 <- trainControl(method="repeatedcv", number=10, repeats=3, search="grid")
+tunegrid <- expand.grid(.mtry=c(sqrt(ncol(tuneTrain))))
+modellist <- list()
+for (ntree in c(1000, 1500, 2000, 2500)) {
+	set.seed(123)
+	fit <- train(as.factor(Survived)~Pclass + Sex + Age + SibSp + Parch+ Familysize + Mothers + Fare + Embarked + title, data=newtrain, method="rf", metric="Accuracy", tuneGrid=tunegrid, trControl=tc3, ntree=ntree)
+	key <- toString(ntree)
+	modellist[[key]] <- fit
+}
+
+results <- resamples(modellist)
+summary(results)
+fit$finalModel
+```
+
+The model with 2500 trees has a mean accuracy of 83% and an out of bag estimate of 16.72%.
+
+It appears that best model, with the lowest OOB and highest accuracy is the model with an mtry of 5, rf_rand$finalModel. This model will be used to predict passenger survival and submitted to Kaggle. 
+
+```{r}
+newtest$Survived <-0
+newtest_match <- newtest[,c(3,5,6,7,8,10,12,13,14,15)]
+SurvProb <- predict.train(rf_rand, newdata = newtest, type="prob", testX = newtest_match, testY= newtest$Survived, models=rf_random$finalModel)
+SurvProb$Total <- ifelse(SurvProb$'1' > 0.5, 1, 0)
+newtest$Survived <- SurvProb$Total
+```
+
+
+**Submission to Kaggle**
+
+```{r}
+submit <- data.frame(PassengerId = newtest$PassengerId, Survived = newtest$Survived)
+write.csv(submit, file = "TitanicMay2016_FINAL.csv", row.names = FALSE)
+```
+Kaggle score of 78%
