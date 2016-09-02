@@ -1,9 +1,4 @@
----
-title: "Titanic Project"
-author: "Not Olivia"
-date: "April 30, 2016"
-output: html_document
----
+
 ```{r, message=FALSE}
 library(car)
 library(stringr)
@@ -275,12 +270,3 @@ SurvProb <- predict.train(rf_rand, newdata = newtest, type="prob", testX = newte
 SurvProb$Total <- ifelse(SurvProb$'1' > 0.5, 1, 0)
 newtest$Survived <- SurvProb$Total
 ```
-
-
-**Submission to Kaggle**
-
-```{r}
-submit <- data.frame(PassengerId = newtest$PassengerId, Survived = newtest$Survived)
-write.csv(submit, file = "TitanicMay2016_FINAL.csv", row.names = FALSE)
-```
-Kaggle score of 78%
